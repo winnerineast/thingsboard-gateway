@@ -1,4 +1,4 @@
-#     Copyright 2019. ThingsBoard
+#     Copyright 2020. ThingsBoard
 #
 #     Licensed under the Apache License, Version 2.0 (the "License");
 #     you may not use this file except in compliance with the License.
@@ -71,7 +71,8 @@ class BLEConnector(Connector, Thread):
         self.__stopped = True
         for device in self.__devices_around:
             try:
-                self.__devices_around[device]['peripheral'].disconnect()
+                if self.__devices_around[device].get('peripheral') is not None:
+                    self.__devices_around[device]['peripheral'].disconnect()
             except Exception as e:
                 log.exception(e)
                 raise e
@@ -249,9 +250,11 @@ class BLEConnector(Connector, Thread):
                             data = self.__service_processing(device, section['section_config'])
                             converter = section['converter']
                             converted_data = converter.convert(section, data)
+                            self.statistics['MessagesReceived'] = self.statistics['MessagesReceived'] + 1
                             log.debug(data)
                             log.debug(converted_data)
                             self.__gateway.send_to_storage(self.get_name(), converted_data)
+                            self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
             except BTLEDisconnectError:
                 log.debug('Cannot connect to device %s', device)
                 continue
@@ -282,6 +285,7 @@ class BLEConnector(Connector, Thread):
                     for interest_information in converter_config:
                         try:
                             converted_data = converter.convert(interest_information, data)
+                            self.statistics['MessagesReceived'] = self.statistics['MessagesReceived'] + 1
                             log.debug(converted_data)
                         except Exception as e:
                             log.debug(e)
@@ -289,8 +293,9 @@ class BLEConnector(Connector, Thread):
                     log.debug('Cannot process %s', e)
                     continue
         if converted_data is not None:
-            self.__gateway.add_device(converted_data["deviceName"], {"connector": self})
+            # self.__gateway.add_device(converted_data["deviceName"], {"connector": self})
             self.__gateway.send_to_storage(self.get_name(), converted_data)
+            self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
 
     def __check_and_reconnect(self, device):
         while self.__devices_around[device]['peripheral']._helper is None:

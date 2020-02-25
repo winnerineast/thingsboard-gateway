@@ -1,4 +1,4 @@
-#     Copyright 2019. ThingsBoard
+#     Copyright 2020. ThingsBoard
 #
 #     Licensed under the Apache License, Version 2.0 (the "License");
 #     you may not use this file except in compliance with the License.
@@ -14,63 +14,48 @@
 
 import logging
 import logging.handlers
-from time import time
-# from thingsboard_gateway.gateway.tb_gateway_service import TBGatewayService
 
 
 class TBLoggerHandler(logging.Handler):
     def __init__(self, gateway):
-        super().__init__(logging.ERROR)
+        self.current_log_level = 'NOTSET'
+        super().__init__(logging.getLevelName(self.current_log_level))
+        self.setLevel(logging.getLevelName('DEBUG'))
         self.__gateway = gateway
         self.activated = False
-        self.log_levels = {
-            # 'NONE': 0,
-            'DEBUG': 10,
-            'INFO': 20,
-            'WARNING': 30,
-            'ERROR': 40,
-            'FATAL': 50,
-            'CRITICAL': 50,
-            'EXCEPTION': 50
-
-        }
-        self.loggers=['service',
-                      'tb_connection',
-                      'storage',
-                      'extension',
-                      'connector'
-                      ]
+        self.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - [%(filename)s] - %(module)s - %(lineno)d - %(message)s'))
+        self.loggers = ['service',
+                        'storage',
+                        'extension',
+                        'converter',
+                        'connector',
+                        'tb_connection'
+                        ]
         for logger in self.loggers:
             log = logging.getLogger(logger)
             log.addHandler(self.__gateway.main_handler)
-        self.__current_log_level = 'ERROR'
-
-    def emit(self, record):
-        pass
+            log.debug("Added remote handler to log %s", logger)
 
     def activate(self, log_level=None):
         try:
             for logger in self.loggers:
-                if log_level is not None and self.log_levels.get(log_level) is not None:
-                    log = logging.getLogger(logger)
-                    self.__current_log_level = log_level
-                    log.setLevel(self.log_levels[log_level])
+                if log_level is not None and logging.getLevelName(log_level) is not None:
+                    if logger == 'tb_connection' and log_level == 'DEBUG':
+                        log = logging.getLogger(logger)
+                        log.setLevel(logging.getLevelName('INFO'))
+                    else:
+                        log = logging.getLogger(logger)
+                        self.current_log_level = log_level
+                        log.setLevel(logging.getLevelName(log_level))
         except Exception as e:
             log = logging.getLogger('service')
-            log.error(e)
+            log.exception(e)
         self.activated = True
 
     def handle(self, record):
         if self.activated:
-            self.__form_message(record)
-            self.__gateway.tb_client.client.send_telemetry(self.message, quality_of_service=1)
-
-    def __form_message(self, record):
-        self.message = {'ts': int(time()*1000),
-                        'values': {
-                            'LOGS': str(record.getMessage())
-                            }
-                        }
+            record = self.formatter.format(record)
+            self.__gateway.send_to_storage(self.__gateway.name, {"deviceName": self.__gateway.name, "telemetry": [{'LOGS': record}]})
 
     def deactivate(self):
         self.activated = False

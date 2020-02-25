@@ -1,4 +1,4 @@
-#     Copyright 2019. ThingsBoard
+#     Copyright 2020. ThingsBoard
 #
 #     Licensed under the Apache License, Version 2.0 (the "License");
 #     you may not use this file except in compliance with the License.
@@ -29,7 +29,8 @@ class MqttConnector(Connector, Thread):
     def __init__(self, gateway, config, connector_type):
         super().__init__()
         self.__log = log
-        self.__connector_type = connector_type
+        self.config = config
+        self._connector_type = connector_type
         self.statistics = {'MessagesReceived': 0,
                            'MessagesSent': 0}
         self.__gateway = gateway
@@ -42,17 +43,17 @@ class MqttConnector(Connector, Thread):
         self.__sub_topics = {}
         client_id = ''.join(random.choice(string.ascii_lowercase) for _ in range(23))
         self._client = Client(client_id)
-        self.setName(self.__broker.get("name",
-                                       'Mqtt Broker ' + ''.join(random.choice(string.ascii_lowercase) for _ in range(5))))
-        if self.__broker["security"]["type"] == "basic":
+        self.setName(config.get("name", self.__broker.get("name",
+                                       'Mqtt Broker ' + ''.join(random.choice(string.ascii_lowercase) for _ in range(5)))))
+        if "username" in self.__broker["security"]:
             self._client.username_pw_set(self.__broker["security"]["username"],
                                          self.__broker["security"]["password"])
-        elif self.__broker["security"]["type"] == "cert.PEM":
+        if "caCert" in self.__broker["security"] or self.__broker["security"].get("type", "none").lower() == "tls":
             ca_cert = self.__broker["security"].get("caCert")
             private_key = self.__broker["security"].get("privateKey")
             cert = self.__broker["security"].get("cert")
-            if ca_cert is None or cert is None:
-                self.__log.error("caCert and cert parameters must be in config if you need to use the SSL. Please add it and try again.")
+            if ca_cert is None:
+                self._client.tls_set_context(ssl.SSLContext(ssl.PROTOCOL_TLSv1_2))
             else:
                 try:
                     self._client.tls_set(ca_certs=ca_cert,
@@ -85,7 +86,7 @@ class MqttConnector(Connector, Thread):
 
     def run(self):
         try:
-            while not self._connected:
+            while not self._connected and not self.__stopped:
                 try:
                     self._client.connect(self.__broker['host'],
                                          self.__broker.get('port', 1883))
@@ -93,15 +94,15 @@ class MqttConnector(Connector, Thread):
                     if not self._connected:
                         time.sleep(1)
                 except Exception as e:
-                    self.__log.error(e)
+                    self.__log.exception(e)
                     time.sleep(10)
 
         except Exception as e:
-            self.__log.error(e)
+            self.__log.exception(e)
             try:
                 self.close()
             except Exception as e:
-                self.__log.debug(e)
+                self.__log.exception(e)
         while True:
             if self.__stopped:
                 break
@@ -109,9 +110,12 @@ class MqttConnector(Connector, Thread):
                 time.sleep(1)
 
     def close(self):
-        self._client.loop_stop()
-        self._client.disconnect()
         self.__stopped = True
+        try:
+            self._client.disconnect()
+        except Exception as e:
+            log.exception(e)
+        self._client.loop_stop()
         self.__log.info('%s has been stopped.', self.get_name())
 
     def get_name(self):
@@ -143,7 +147,7 @@ class MqttConnector(Connector, Thread):
                     converter = None
                     if mapping["converter"]["type"] == "custom":
                         try:
-                            module = TBUtility.check_and_import(self.__connector_type, mapping["converter"]["extension"])
+                            module = TBUtility.check_and_import(self._connector_type, mapping["converter"]["extension"])
                             if module is not None:
                                 self.__log.debug('Custom converter for topic %s - found!', mapping["topicFilter"])
                                 converter = module(mapping)
@@ -195,7 +199,7 @@ class MqttConnector(Connector, Thread):
                 self.__log.error('"%s" subscription failed to topic %s subscription message id = %i', self.get_name(), self.__subscribes_sent.get(mid), mid)
             else:
                 self.__log.info('"%s" subscription success to topic %s, subscription message id = %i', self.get_name(), self.__subscribes_sent.get(mid), mid)
-                if self.__subscribes_sent.get is not None:
+                if self.__subscribes_sent.get(mid) is not None:
                     del self.__subscribes_sent[mid]
         except Exception as e:
             self.__log.exception(e)
@@ -209,7 +213,7 @@ class MqttConnector(Connector, Thread):
 
     def _on_message(self, client, userdata, message):
         self.statistics['MessagesReceived'] += 1
-        content = self._decode(message)
+        content = TBUtility.decode(message)
         regex_topic = [regex for regex in self.__sub_topics if fullmatch(regex, message.topic)]
         if regex_topic:
             try:
@@ -242,13 +246,19 @@ class MqttConnector(Connector, Thread):
                         if message.topic in request.get("topicFilter") or\
                                 (request.get("deviceNameTopicExpression") is not None and search(request.get("deviceNameTopicExpression"), message.topic)):
                             founded_device_name = None
+                            founded_device_type = 'default'
                             if request.get("deviceNameJsonExpression"):
                                 founded_device_name = TBUtility.get_value(request["deviceNameJsonExpression"], content)
                             if request.get("deviceNameTopicExpression"):
                                 device_name_expression = request["deviceNameTopicExpression"]
                                 founded_device_name = search(device_name_expression, message.topic)
+                            if request.get("deviceTypeJsonExpression"):
+                                founded_device_type = TBUtility.get_value(request["deviceTypeJsonExpression"], content)
+                            if request.get("deviceTypeTopicExpression"):
+                                device_type_expression = request["deviceTypeTopicExpression"]
+                                founded_device_type = search(device_type_expression, message.topic)
                             if founded_device_name is not None and founded_device_name not in self.__gateway.get_devices():
-                                self.__gateway.add_device(founded_device_name, {"connector": self})
+                                self.__gateway.add_device(founded_device_name, {"connector": self}, device_type=founded_device_type)
                         else:
                             self.__log.error("Cannot find connect request for device from message from topic: %s and with data: %s",
                                              message.topic,
@@ -325,10 +335,10 @@ class MqttConnector(Connector, Thread):
                     topic_for_subscribe = rpc_config["responseTopicExpression"] \
                         .replace("${deviceName}", content["device"]) \
                         .replace("${methodName}", content["data"]["method"]) \
-                        .replace("${requestId}", content["data"]["id"]) \
+                        .replace("${requestId}", str(content["data"]["id"])) \
                         .replace("${params}", content["data"]["params"])
                     if rpc_config.get("responseTimeout"):
-                        timeout = time.time()+rpc_config.get("responseTimeout")
+                        timeout = time.time()*1000+rpc_config.get("responseTimeout")
                         self.__gateway.register_rpc_request_timeout(content,
                                                                     timeout,
                                                                     topic_for_subscribe,
@@ -343,25 +353,23 @@ class MqttConnector(Connector, Thread):
                     topic = rpc_config.get("requestTopicExpression")\
                         .replace("${deviceName}", content["device"])\
                         .replace("${methodName}", content["data"]["method"])\
-                        .replace("${requestId}", content["data"]["id"])\
+                        .replace("${requestId}", str(content["data"]["id"]))\
                         .replace("${params}", content["data"]["params"])
                     data_to_send = rpc_config.get("valueExpression")\
                         .replace("${deviceName}", content["device"])\
                         .replace("${methodName}", content["data"]["method"])\
-                        .replace("${requestId}", content["data"]["id"])\
+                        .replace("${requestId}", str(content["data"]["id"]))\
                         .replace("${params}", content["data"]["params"])
                     try:
                         self._client.publish(topic, data_to_send)
                         self.__log.debug("Send RPC with no response request to topic: %s with data %s",
                                   topic,
                                   data_to_send)
+                        if rpc_config.get("responseTopicExpression") is None:
+                            self.__gateway.send_rpc_reply(device=content["device"], req_id=content["data"]["id"], success_sent=True)
                     except Exception as e:
-                        self.__log.error(e)
+                        self.__log.exception(e)
 
     def rpc_cancel_processing(self, topic):
         self._client.unsubscribe(topic)
 
-    @staticmethod
-    def _decode(message):
-        content = loads(message.payload.decode("utf-8"))
-        return content

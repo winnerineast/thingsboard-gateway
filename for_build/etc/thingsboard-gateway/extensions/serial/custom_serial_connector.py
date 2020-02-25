@@ -1,4 +1,4 @@
-#     Copyright 2019. ThingsBoard
+#     Copyright 2020. ThingsBoard
 #
 #     Licensed under the Apache License, Version 2.0 (the "License");
 #     you may not use this file except in compliance with the License.
@@ -78,7 +78,7 @@ class CustomSerialConnector(Thread, Connector):    # Define a connector class, i
                 log.exception(e)
                 time.sleep(10)
             else:    # if no exception handled - add device and change connection state
-                self.__gateway.add_device(self.devices[device]["device_config"]["name"], {"connector": self})
+                self.__gateway.add_device(self.devices[device]["device_config"]["name"], {"connector": self}, self.devices[device]["device_config"]["type"])
                 self.connected = True
 
     def open(self):    # Function called by gateway on start

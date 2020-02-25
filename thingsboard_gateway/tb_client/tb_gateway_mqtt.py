@@ -1,4 +1,4 @@
-#     Copyright 2019. ThingsBoard
+#     Copyright 2020. ThingsBoard
 #
 #     Licensed under the Apache License, Version 2.0 (the "License");
 #     you may not use this file except in compliance with the License.
@@ -17,14 +17,17 @@ import time
 from simplejson import dumps
 
 from thingsboard_gateway.tb_client.tb_device_mqtt import TBDeviceMqttClient, DEVICE_TS_KV_VALIDATOR, KV_VALIDATOR
+from thingsboard_gateway.tb_utility.tb_utility import TBUtility
 
 GATEWAY_ATTRIBUTES_TOPIC = "v1/gateway/attributes"
 GATEWAY_ATTRIBUTES_REQUEST_TOPIC = "v1/gateway/attributes/request"
 GATEWAY_ATTRIBUTES_RESPONSE_TOPIC = "v1/gateway/attributes/response"
 GATEWAY_MAIN_TOPIC = "v1/gateway/"
 GATEWAY_RPC_TOPIC = "v1/gateway/rpc"
+GATEWAY_RPC_RESPONSE_TOPIC = "v1/gateway/rpc/response"
 
 log = logging.getLogger("tb_connection")
+log.setLevel(logging.DEBUG)
 
 
 class TBGatewayAPI:
@@ -40,17 +43,37 @@ class TBGatewayMqttClient(TBDeviceMqttClient):
         self.devices_server_side_rpc_request_handler = None
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
+        self._client.on_subscribe = self._on_subscribe
+        self._client._on_unsubscribe = self._on_unsubscribe
+        self._gw_subscriptions = {}
         self.gateway = gateway
 
     def _on_connect(self, client, userdata, flags, rc, *extra_params):
         super()._on_connect(client, userdata, flags, rc, *extra_params)
         if rc == 0:
-            self._client.subscribe(GATEWAY_ATTRIBUTES_TOPIC, qos=1)
-            self._client.subscribe(GATEWAY_ATTRIBUTES_RESPONSE_TOPIC + "/+")
-            self._client.subscribe(GATEWAY_RPC_TOPIC + "/+")
+            self._gw_subscriptions[int(self._client.subscribe(GATEWAY_ATTRIBUTES_TOPIC, qos=1)[1])] = GATEWAY_ATTRIBUTES_TOPIC
+            self._gw_subscriptions[int(self._client.subscribe(GATEWAY_ATTRIBUTES_RESPONSE_TOPIC + "/+")[1])] = GATEWAY_ATTRIBUTES_RESPONSE_TOPIC
+            self._gw_subscriptions[int(self._client.subscribe(GATEWAY_RPC_TOPIC + "/+")[1])] = GATEWAY_RPC_TOPIC
+            self._gw_subscriptions[int(self._client.subscribe(GATEWAY_RPC_RESPONSE_TOPIC + "/+")[1])] = GATEWAY_RPC_RESPONSE_TOPIC
+
+    def _on_subscribe(self, client, userdata, mid, granted_qos):
+        subscription = self._gw_subscriptions.get(mid)
+        if subscription is not None:
+            if mid == 128:
+                log.error("Service subscription to topic %s - failed.", subscription)
+                del(self._gw_subscriptions[mid])
+            else:
+                log.debug("Service subscription to topic %s - successfully completed.", subscription)
+                del(self._gw_subscriptions[mid])
+
+    def _on_unsubscribe(self, *args):
+        log.debug(args)
+
+    def get_subscriptions_in_progress(self):
+        return True if self._gw_subscriptions else False
 
     def _on_message(self, client, userdata, message):
-        content = self._decode(message)
+        content = TBUtility.decode(message)
         super()._on_decoded_message(content, message)
         self._on_decoded_message(content, message)
 
@@ -118,8 +141,10 @@ class TBGatewayMqttClient(TBDeviceMqttClient):
         # self.validate(DEVICE_TS_KV_VALIDATOR, telemetry)
         return self.publish_data({device: telemetry}, GATEWAY_MAIN_TOPIC + "telemetry", quality_of_service, )
 
-    def gw_connect_device(self, device_name):
-        info = self._client.publish(topic=GATEWAY_MAIN_TOPIC + "connect", payload=dumps({"device": device_name}), qos=1)
+    #TODO ADD "type" to connection request
+
+    def gw_connect_device(self, device_name, device_type):
+        info = self._client.publish(topic=GATEWAY_MAIN_TOPIC + "connect", payload=dumps({"device": device_name, "type": device_type}), qos=1)
         self.__connected_devices.add(device_name)
         # if self.gateway:
         #     self.gateway.on_device_connected(device_name, self.__devices_server_side_rpc_request_handler)
@@ -162,6 +187,8 @@ class TBGatewayMqttClient(TBDeviceMqttClient):
                     del self.__sub_dict[x][subscription_id]
                     log.debug("Unsubscribed from {attribute}, subscription id {sub_id}".format(attribute=x,
                                                                                                sub_id=subscription_id))
+            if subscription_id == '*':
+                self.__sub_dict = {}
 
     def gw_set_server_side_rpc_request_handler(self, handler):
         self.devices_server_side_rpc_request_handler = handler

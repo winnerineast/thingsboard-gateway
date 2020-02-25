@@ -1,4 +1,4 @@
-#     Copyright 2019. ThingsBoard
+#     Copyright 2020. ThingsBoard
 #
 #     Licensed under the Apache License, Version 2.0 (the "License");
 #     you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ import time
 from simplejson import loads, dumps
 from threading import RLock
 from threading import Thread
+from thingsboard_gateway.tb_utility.tb_utility import TBUtility
 
 import paho.mqtt.client as paho
 from jsonschema import Draft7Validator
@@ -139,6 +140,7 @@ class TBDeviceMqttClient:
         self._lock = RLock()
 
         self._attr_request_dict = {}
+        self.stopped = False
         self.__timeout_queue = queue.Queue()
         self.__timeout_thread = Thread(target=self.__timeout_check)
         self.__timeout_thread.daemon = True
@@ -158,14 +160,15 @@ class TBDeviceMqttClient:
         self._client.on_disconnect = self._on_disconnect
 
     def _on_log(self, client, userdata, level, buf):
-        log.debug(buf)
+        log.exception(buf)
 
     def _on_publish(self, client, userdata, result):
         # log.debug("Data published to ThingsBoard!")
         pass
 
     def _on_disconnect(self, client, userdata, rc):
-        self.__is_connected = False
+        log.debug(client)
+        log.debug("Disconnected")
 
     def _on_connect(self, client, userdata, flags, rc, *extra_params):
         result_codes = {
@@ -180,6 +183,7 @@ class TBDeviceMqttClient:
         if rc == 0:
             self.__is_connected = True
             log.info("connection SUCCESS")
+            log.debug(client)
             self._client.subscribe(ATTRIBUTES_TOPIC, qos=1)
             self._client.subscribe(ATTRIBUTES_TOPIC + "/response/+", 1)
             self._client.subscribe(RPC_REQUEST_TOPIC + '+')
@@ -210,19 +214,17 @@ class TBDeviceMqttClient:
 
     def disconnect(self):
         self._client.disconnect()
-        log.info("Disconnected from ThingsBoard!")
+        log.debug(self._client)
+        log.debug("Disconnecting from ThingsBoard")
+        self.__is_connected = False
+        self._client.loop_stop()
+
+    def stop(self):
+        self.stopped = True
 
     def _on_message(self, client, userdata, message):
-        content = self._decode(message)
+        content = TBUtility.decode(message)
         self._on_decoded_message(content, message)
-
-
-    @staticmethod
-    def _decode(message):
-        content = loads(message.payload.decode("utf-8"))
-        log.debug(content)
-        log.debug(message.topic)
-        return content
 
     @staticmethod
     def validate(validator, data):
@@ -334,6 +336,8 @@ class TBDeviceMqttClient:
                     del self.__device_sub_dict[x][subscription_id]
                     log.debug("Unsubscribed from {attribute}, subscription id {sub_id}".format(attribute=x,
                                                                                                sub_id=subscription_id))
+            if subscription_id == '*':
+                self.__device_sub_dict = {}
             self.__device_sub_dict = dict((k, v) for k, v in self.__device_sub_dict.items() if v is not {})
 
     def subscribe_to_all_attributes(self, callback):
@@ -350,9 +354,6 @@ class TBDeviceMqttClient:
             return self.__device_max_sub_id
 
     def request_attributes(self, client_keys=None, shared_keys=None, callback=None):
-        if client_keys is None and shared_keys is None:
-            log.error("There are no keys to request")
-            return False
         msg = {}
         if client_keys:
             tmp = ""
@@ -388,27 +389,28 @@ class TBDeviceMqttClient:
         return attr_request_number
 
     def __timeout_check(self):
-        while True:
+        while not self.stopped:
             try:
-                item = self.__timeout_queue.get()
-                if item is not None:
-                    while True:
-                        current_ts_in_millis = int(round(time.time() * 1000))
-                        if current_ts_in_millis > item["ts"]:
-                            break
-                        else:
-                            time.sleep(0.001)
-                    with self._lock:
-                        callback = None
-                        if item.get("attribute_request_id"):
-                            if self._attr_request_dict.get(item["attribute_request_id"]):
-                                callback = self._attr_request_dict.pop(item["attribute_request_id"])
-                        elif item.get("rpc_request_id"):
-                            if self.__device_client_rpc_dict.get(item["rpc_request_id"]):
-                                callback = self.__device_client_rpc_dict.pop(item["rpc_request_id"])
-                    if callback is not None:
-                        callback(None, TBTimeoutException("Timeout while waiting for reply from ThingsBoard!"))
+                if not self.__timeout_queue.empty():
+                    item = self.__timeout_queue.get_nowait()
+                    if item is not None:
+                        while not self.stopped:
+                            current_ts_in_millis = int(round(time.time() * 1000))
+                            if current_ts_in_millis > item["ts"]:
+                                break
+                            else:
+                                time.sleep(0.001)
+                        with self._lock:
+                            callback = None
+                            if item.get("attribute_request_id"):
+                                if self._attr_request_dict.get(item["attribute_request_id"]):
+                                    callback = self._attr_request_dict.pop(item["attribute_request_id"])
+                            elif item.get("rpc_request_id"):
+                                if self.__device_client_rpc_dict.get(item["rpc_request_id"]):
+                                    callback = self.__device_client_rpc_dict.pop(item["rpc_request_id"])
+                        if callback is not None:
+                            callback(None, TBTimeoutException("Timeout while waiting for reply from ThingsBoard!"))
                 else:
-                    time.sleep(0.001)
+                    time.sleep(0.01)
             except Exception as e:
                 log.warning(e)

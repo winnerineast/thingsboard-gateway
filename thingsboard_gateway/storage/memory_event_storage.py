@@ -1,4 +1,4 @@
-#     Copyright 2019. ThingsBoard
+#     Copyright 2020. ThingsBoard
 #
 #     Licensed under the Apache License, Version 2.0 (the "License");
 #     you may not use this file except in compliance with the License.
@@ -12,11 +12,9 @@
 #     See the License for the specific language governing permissions and
 #     limitations under the License.
 
-from thingsboard_gateway.storage.event_storage import EventStorage
+from thingsboard_gateway.storage.event_storage import EventStorage, log
 import queue
 from logging import getLogger
-
-log = getLogger("storage")
 
 
 class MemoryEventStorage(EventStorage):

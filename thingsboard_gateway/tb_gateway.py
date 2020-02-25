@@ -1,4 +1,4 @@
-#     Copyright 2019. ThingsBoard
+#     Copyright 2020. ThingsBoard
 #
 #     Licensed under the Apache License, Version 2.0 (the "License");
 #     you may not use this file except in compliance with the License.
@@ -17,11 +17,11 @@ from thingsboard_gateway.gateway.tb_gateway_service import TBGatewayService
 
 
 def main():
-    TBGatewayService(path.dirname(path.abspath(__file__)) + '//config//tb_gateway.yaml')
+    TBGatewayService(path.dirname(path.abspath(__file__)) + '/config/tb_gateway.yaml'.replace('/', path.sep))
 
 
 def daemon():
-    TBGatewayService("/etc/thingsboard-gateway/config/tb_gateway.yaml")
+    TBGatewayService("/etc/thingsboard-gateway/config/tb_gateway.yaml".replace('/', path.sep))
 
 
 if __name__ == '__main__':

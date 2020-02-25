@@ -1,4 +1,4 @@
-#     Copyright 2019. ThingsBoard
+#     Copyright 2020. ThingsBoard
 #
 #     Licensed under the Apache License, Version 2.0 (the "License");
 #     you may not use this file except in compliance with the License.
@@ -42,5 +42,5 @@ class CustomMqttUplinkConverter(MqttUplinkConverter):
             return self.dict_result
 
         except Exception as e:
-            log.error('Error in converter, for config: \n%s\n and message: \n%s\n', dumps(self.__config), body)
+            log.exception('Error in converter, for config: \n%s\n and message: \n%s\n', dumps(self.__config), body)
             log.error(e)
