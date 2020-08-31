@@ -12,16 +12,14 @@
 #     See the License for the specific language governing permissions and
 #     limitations under the License.
 
-from thingsboard_gateway.storage.event_storage import EventStorage, log
-from thingsboard_gateway.storage.event_storage_files import EventStorageFiles
-from thingsboard_gateway.storage.event_storage_writer import EventStorageWriter
-from thingsboard_gateway.storage.event_storage_reader import EventStorageReader
-from thingsboard_gateway.storage.file_event_storage_settings import FileEventStorageSettings
-from random import choice
-from string import ascii_lowercase
 import os
 import time
-import json
+from simplejson import dump
+from thingsboard_gateway.storage.event_storage import EventStorage, log
+from thingsboard_gateway.storage.event_storage_files import EventStorageFiles
+from thingsboard_gateway.storage.event_storage_writer import EventStorageWriter, DataFileCountError
+from thingsboard_gateway.storage.event_storage_reader import EventStorageReader
+from thingsboard_gateway.storage.file_event_storage_settings import FileEventStorageSettings
 
 
 class FileEventStorage(EventStorage):
@@ -37,10 +35,13 @@ class FileEventStorage(EventStorage):
     def put(self, event):
         try:
             self.__writer.write(event)
-            return True
+        except DataFileCountError as e:
+            log.error(e)
         except Exception as e:
             log.exception(e)
             return False
+        else:
+            return True
 
     def get_event_pack(self):
         return self.__reader.read()
@@ -54,13 +55,14 @@ class FileEventStorage(EventStorage):
             try:
                 os.makedirs(path)
             except OSError as e:
-                log.error('Failed to create data folder!', e)
+                log.error('Failed to create data folder! Error: %s', e)
 
     def init_data_files(self):
         data_files = []
         state_file = None
         data_files_size = 0
         _dir = self.settings.get_data_folder_path()
+        event_storage_files = None
         if os.path.isdir(_dir):
             for file in os.listdir(_dir):
                 if file.startswith('data_'):
@@ -72,9 +74,10 @@ class FileEventStorage(EventStorage):
                 data_files.append(self.create_new_datafile())
             if not state_file:
                 state_file = self.create_file('state_', 'file')
-                with open(self.settings.get_data_folder_path() + state_file, 'w') as f:
-                    json.dump({"position": 0, "file": sorted(data_files)[0]}, f)
-            return EventStorageFiles(state_file, data_files)
+                with open(self.settings.get_data_folder_path() + state_file, 'w') as state_file_obj:
+                    dump({"position": 0, "file": sorted(data_files)[0]}, state_file_obj)
+            event_storage_files = EventStorageFiles(state_file, data_files)
+        return event_storage_files
 
     def create_new_datafile(self):
         return self.create_file('data_', str(round(time.time() * 1000)))
@@ -86,5 +89,4 @@ class FileEventStorage(EventStorage):
             file.close()
             return prefix + filename + '.txt'
         except IOError as e:
-            log.error("Failed to create a new file!", e)
-            pass
+            log.error("Failed to create a new file! Error: %s", e)

@@ -13,10 +13,11 @@
 #     limitations under the License.
 
 from io import BufferedReader, FileIO
-from os import remove
+from os import remove, listdir
 from os.path import exists
+from time import sleep
 from base64 import b64decode
-from simplejson import load, dumps, JSONDecodeError
+from simplejson import load, JSONDecodeError, dumps
 from thingsboard_gateway.storage.file_event_storage import log
 from thingsboard_gateway.storage.event_storage_files import EventStorageFiles
 from thingsboard_gateway.storage.file_event_storage_settings import FileEventStorageSettings
@@ -25,6 +26,7 @@ from thingsboard_gateway.storage.event_storage_reader_pointer import EventStorag
 
 class EventStorageReader:
     def __init__(self, files: EventStorageFiles, settings: FileEventStorageSettings):
+        self.log = log
         self.files = files
         self.settings = settings
         self.current_batch = None
@@ -42,51 +44,47 @@ class EventStorageReader:
             try:
                 current_line_in_file = self.new_pos.get_line()
                 self.buffered_reader = self.get_or_init_buffered_reader(self.new_pos)
-                line = self.buffered_reader.readline()
-                while line != b'':
-                    try:
-                        self.current_batch.append(b64decode(line).decode("utf-8"))
-                        records_to_read -= 1
-                    except IOError as e:
-                        log.warning("Could not parse line [%s] to uplink message! %s", line, e)
-                    except Exception as e:
-                        log.exception(e)
-                        current_line_in_file += 1
+                if self.buffered_reader is not None:
+                    line = self.buffered_reader.readline()
+                    while line != b'':
+                        try:
+                            self.current_batch.append(b64decode(line).decode("utf-8"))
+                            records_to_read -= 1
+                        except IOError as e:
+                            log.warning("Could not parse line [%s] to uplink message! %s", line, e)
+                        except Exception as e:
+                            log.exception(e)
+                            current_line_in_file += 1
+                            self.new_pos.set_line(current_line_in_file)
+                            self.write_info_to_state_file(self.new_pos)
+                            break
+                        finally:
+                            current_line_in_file += 1
+                            if records_to_read > 0:
+                                line = self.buffered_reader.readline()
                         self.new_pos.set_line(current_line_in_file)
-                        self.write_info_to_state_file(self.new_pos)
-                        break
-                    finally:
-                        current_line_in_file += 1
-                        if records_to_read > 0:
-                            line = self.buffered_reader.readline()
-                    self.new_pos.set_line(current_line_in_file)
-                    if records_to_read == 0:
-                        break
+                        if records_to_read == 0:
+                            break
 
-                if current_line_in_file >= self.settings.get_max_records_per_file():
-                    previous_file = self.new_pos
-                    next_file = self.get_next_file(self.files, self.new_pos)
-                    if next_file is not None:
+                    if (self.settings.get_max_records_per_file() >= current_line_in_file >= 0) or \
+                            (line == b'' and current_line_in_file >= self.settings.get_max_records_per_file() - 1):
+                        previous_file = self.current_pos
+                        next_file = self.get_next_file(self.files, self.new_pos)
+                        # self.write_info_to_state_file(self.new_pos)
+                        if next_file is None:
+                            break
+                        self.delete_read_file(previous_file)
                         if self.buffered_reader is not None:
                             self.buffered_reader.close()
-                        self.buffered_reader = None
-                        self.delete_read_file(previous_file)
+                        # self.buffered_reader = None
                         self.new_pos = EventStorageReaderPointer(next_file, 0)
-                        self.write_info_to_state_file(self.new_pos)
+                        self.get_or_init_buffered_reader(self.new_pos)
                         continue
-                    else:
-                        # No more records to read for now
+                    if line == b'':
                         break
-                        # continue
-                        ###################
-                if line == b'':
-                    break
-                    #######################
-                else:
-                    # No more records to read for now
                     continue
             except IOError as e:
-                log.warning("[{}] Failed to read file!".format(self.new_pos.get_file(), e))
+                log.warning("[%s] Failed to read file! Error: %s", self.new_pos.get_file(), e)
                 break
             except Exception as e:
                 log.exception(e)
@@ -103,48 +101,45 @@ class EventStorageReader:
         except Exception as e:
             log.exception(e)
 
-    def get_next_file(self, files: EventStorageFiles, new_pos: EventStorageReaderPointer):
-        found = False
-        data_files = files.get_data_files()
-        target_file = None
-        for file_index in range(len(data_files)):
-            if found:
-                target_file = data_files[file_index]
-                break
-            if data_files[file_index] == new_pos.get_file():
-                found = True
-        return target_file
-
     def get_or_init_buffered_reader(self, pointer):
         try:
             if self.buffered_reader is None or self.buffered_reader.closed:
                 new_file_to_read_path = self.settings.get_data_folder_path() + pointer.get_file()
+                # if not exists(new_file_to_read_path):
+                #     next_file = self.get_next_file(self.files, self.new_pos)
+                #     if next_file is not None:
+                #         new_file_to_read_path = self.settings.get_data_folder_path() + next_file
+                #     else:
+                #         self.buffered_reader = None
+                #         return None
                 self.buffered_reader = BufferedReader(FileIO(new_file_to_read_path, 'r'))
                 lines_to_skip = pointer.get_line()
                 if lines_to_skip > 0:
                     while self.buffered_reader.readline() is not None:
-                        if lines_to_skip != 0:
+                        if lines_to_skip > 0:
                             lines_to_skip -= 1
                         else:
                             break
+
             return self.buffered_reader
 
         except IOError as e:
-            log.error("Failed to initialize buffered reader!", e)
+            log.error("Failed to initialize buffered reader! Error: %s", e)
             raise RuntimeError("Failed to initialize buffered reader!", e)
+        except Exception as e:
+            log.exception(e)
 
     def read_state_file(self):
         try:
             state_data_node = {}
             try:
-                with BufferedReader(FileIO(self.settings.get_data_folder_path() +
-                                                 self.files.get_state_file(), 'r')) as br:
-                    state_data_node = load(br)
+                with BufferedReader(FileIO(self.settings.get_data_folder_path() + self.files.get_state_file(), 'r')) as buffered_reader:
+                    state_data_node = load(buffered_reader)
             except JSONDecodeError:
                 log.error("Failed to decode JSON from state file")
                 state_data_node = 0
             except IOError as e:
-                log.warning("Failed to fetch info from state file!", e)
+                log.warning("Failed to fetch info from state file! Error: %s", e)
             reader_file = None
             reader_pos = 0
             if state_data_node:
@@ -169,21 +164,35 @@ class EventStorageReader:
             with open(self.settings.get_data_folder_path() + self.files.get_state_file(), 'w') as outfile:
                 outfile.write(dumps(state_file_node))
         except IOError as e:
-            log.warning("Failed to update state file!", e)
+            log.warning("Failed to update state file! Error: %s", e)
         except Exception as e:
             log.exception(e)
 
     def delete_read_file(self, current_file: EventStorageReaderPointer):
         data_files = self.files.get_data_files()
-        if exists(self.settings.get_data_folder_path() + current_file.file):
-            remove(self.settings.get_data_folder_path() + current_file.file)
-            try:
-                data_files = data_files[1:]
-            except Exception as e:
-                log.exception(e)
-            log.info("FileStorage_reader -- Cleanup old data file: %s%s!", self.settings.get_data_folder_path(), current_file.file)
+        try:
+            if exists(self.settings.get_data_folder_path() + current_file.file) and len(data_files) > 1:
+                remove(self.settings.get_data_folder_path() + current_file.file)
+            if current_file.file in data_files:
+                self.files.data_files.remove(current_file.file)
+                log.info("FileStorage_reader -- Cleanup old data file: %s%s!", self.settings.get_data_folder_path(), current_file.file)
+        except Exception as e:
+            log.exception(e)
 
     def destroy(self):
         if self.buffered_reader is not None:
             self.buffered_reader.close()
             raise IOError
+
+    @staticmethod
+    def get_next_file(files: EventStorageFiles, new_pos: EventStorageReaderPointer):
+        found = False
+        data_files = files.get_data_files()
+        target_file = None
+        for file_index, _ in enumerate(data_files):
+            if found:
+                target_file = data_files[file_index]
+                break
+            if data_files[file_index] == new_pos.get_file():
+                found = True
+        return target_file

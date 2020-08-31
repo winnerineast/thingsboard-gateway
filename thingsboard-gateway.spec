@@ -1,6 +1,6 @@
 %define name thingsboard-gateway
-%define version 2.2.1
-%define unmangled_version 2.2.1
+%define version 2.5.0
+%define unmangled_version 2.5.0
 %define release 1
 
 Summary: Thingsboard Gateway for IoT devices.
@@ -61,7 +61,7 @@ sudo rm -rf $RPM_BUILD_ROOT
 /etc/thingsboard-gateway/
 /var/log/thingsboard-gateway/
 /var/lib/thingsboard_gateway/
-%exclude /usr/local/lib/python3.7
+%exclude /usr/local/lib/python3.8
 %exclude /usr/local/bin/thingsboard-gateway
 %defattr(-,thingsboard_gateway,thingsboard_gateway)
 

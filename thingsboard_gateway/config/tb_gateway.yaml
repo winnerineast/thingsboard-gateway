@@ -1,6 +1,7 @@
 thingsboard:
   host: demo.thingsboard.io
   port: 1883
+  remoteShell: false
   remoteConfiguration: false
   security:
     accessToken: PUT_YOUR_GW_ACCESS_TOKEN_HERE
@@ -14,7 +15,6 @@ storage:
 #  max_read_records_count: 10
 #  max_records_per_file: 10000
 connectors:
-
   -
     name: MQTT Broker Connector
     type: mqtt
@@ -41,9 +41,34 @@ connectors:
 #    configuration: ble.json
 #
 #  -
-#    name: REQUEST
+#    name: REQUEST Connector
 #    type: request
 #    configuration: request.json
+#
+#  -
+#    name: CAN Connector
+#    type: can
+#    configuration: can.json
+#
+#  -
+#    name: BACnet Connector
+#    type: bacnet
+#    configuration: bacnet.json
+#
+#  -
+#    name: ODBC Connector
+#    type: odbc
+#    configuration: odbc.json
+#
+#  -
+#    name: REST Connector
+#    type: rest
+#    configuration: rest.json
+#
+#  -
+#    name: SNMP Connector
+#    type: snmp
+#    configuration: snmp.json
 #
 #  -
 #    name: Custom Serial Connector
