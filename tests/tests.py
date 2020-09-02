@@ -14,9 +14,12 @@
 
 import logging
 import unittest
-from os import remove, listdir, removedirs
+from os import remove, listdir, removedirs, urandom
 from time import sleep
 from random import randint
+
+from thingsboard_gateway.security.aes import AES
+
 from pymodbus.constants import Endian
 from pymodbus.payload import BinaryPayloadBuilder
 from thingsboard_gateway.connectors.mqtt.json_mqtt_uplink_converter import JsonMqttUplinkConverter
@@ -353,10 +356,13 @@ class ConvertersTests(unittest.TestCase):
           "timeout": 0.5,
           "scanPeriod": 5,
           "converter": {
-            "type": "json",
-            "attributes": [
-            ],
-            "telemetry": [
+              "deviceNameJsonExpression": "${$.sensor}",
+              "deviceTypeJsonExpression": "default",
+              "type": "json",
+              "attributes": [
+
+              ],
+              "telemetry": [
               {
 
                 "key": "${$.name}",
@@ -381,7 +387,7 @@ class ConvertersTests(unittest.TestCase):
         }
 
         converter = JsonRequestUplinkConverter(test_request_config)
-        result = converter.convert(test_request_convert_config, test_request_body_to_convert)
+        result = converter.convert(test_request_config, test_request_body_to_convert)
         self.assertDictEqual(result, test_request_result)
 
 
@@ -439,6 +445,79 @@ class TestStorage(unittest.TestCase):
             remove(storage_test_config["data_folder_path"]+"/"+file)
         removedirs(storage_test_config["data_folder_path"])
         self.assertListEqual(result, correct_result)
+
+
+class SecurityTests(unittest.TestCase):
+    # AES ECB Mode Testing for hex string.
+    def test_hex_ecb(self):
+        # Test vector 128-bit key
+        key = '000102030405060708090a0b0c0d0e0f'
+        # Aes mode of operation
+        aes = AES(mode='ecb', input_type='hex')
+        # Encrypt data with your key
+        cyphertext = aes.encryption('00112233445566778899aabbccddeeff', key)
+        # Decrypt data with the same key
+        plaintext = aes.decryption(cyphertext, key)
+        # Ensure that data is equal to plaintext
+        self.assertEqual('00112233445566778899aabbccddeeff', plaintext)
+
+    # AES ECB Mode Testing for ascii string.
+    def test_str(self):
+        # Test vector 128-bit key
+        key = '000102030405060708090a0b0c0d0e0f'
+        # Ascii string test
+        aes = AES(mode='ecb', input_type='text')
+        # Encrypt data with your key
+        cyphertext = aes.encryption('mqtt_user', key)
+        # Decrypt data with the same key
+        plaintext = aes.decryption(cyphertext, key)
+        # Ensure that data is equal to plaintext
+        self.assertEqual('mqtt_user', plaintext)
+
+    # AES ECB Mode Testing for raw data.
+    def test_data_ecb(self):
+        # Test vector 128-bit key
+        key = '000102030405060708090a0b0c0d0e0f'
+        # Data stream test
+        aes = AES(mode='ecb', input_type='data')
+        # Random data to encrypt
+        data = urandom(64)
+        # Encrypt data with your key
+        cyphertext = aes.encryption(data, key)
+        # Decrypt data with the same key
+        plaintext = aes.decryption(cyphertext, key)
+        # Ensure that data is equal to plaintext
+        self.assertEqual(data, plaintext)
+
+    # AES CBC Mode Testing for hex string.
+    def test_hex_cbc(self):
+        # Test vector 128-bit key
+        key = '000102030405060708090a0b0c0d0e0f'
+        # Data stream test
+        aes = AES(mode='cbc', input_type='hex', iv='000102030405060708090A0B0C0D0E0F')
+        # Random data to encrypt
+        data = ['6bc1bee22e409f96e93d7e117393172a']
+        # Encrypt data with your key
+        cyphertext = aes.encryption(data, key)
+        # Decrypt data with the same key
+        plaintext = aes.decryption(cyphertext, key)
+        # Ensure that data is equal to plaintext
+        self.assertEqual(data, [plaintext])
+
+    # AES CBC Mode Testing for raw data.
+    def test_data_cbc(self):
+        # Test vector 128-bit key
+        key = '000102030405060708090a0b0c0d0e0f'
+        # Raw data stream test
+        aes = AES(mode='cbc', input_type='data', iv='000102030405060708090A0B0C0D0E0F')
+        # Random data to encrypt
+        data = urandom(254)
+        # Encrypt data with your key
+        cyphertext = aes.encryption(data, key)
+        # Decrypt data with the same key
+        plaintext = aes.decryption(cyphertext, key)
+        # Ensure that data is equal to plaintext
+        self.assertEqual(data, plaintext)
 
 
 if __name__ == '__main__':
