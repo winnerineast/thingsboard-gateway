@@ -55,7 +55,7 @@ class OpcUaConnector(Thread, Connector):
         else:
             self.__opcua_url = self.__server_conf.get("url")
         self.client = Client(self.__opcua_url, timeout=self.__server_conf.get("timeoutInMillis", 4000)/1000)
-        if self.__server_conf["identity"]["type"] == "cert.PEM":
+        if self.__server_conf["identity"].get("type") == "cert.PEM": 
             try:
                 ca_cert = self.__server_conf["identity"].get("caCert")
                 private_key = self.__server_conf["identity"].get("privateKey")
@@ -132,7 +132,12 @@ class OpcUaConnector(Thread, Connector):
                     if self.__server_conf.get("disableSubscriptions", False) and time.time()*1000 - self.__previous_scan_time > self.__server_conf.get("scanPeriodInMillis", 60000):
                         self.scan_nodes_from_config()
                         self.__previous_scan_time = time.time() * 1000
-                    if self.data_to_send:
+                    # giusguerrini, 2020-09-24: Fix: flush event set and send all data to platform,
+                    # so data_to_send doesn't grow indefinitely in case of more than one value change
+                    # per cycle, and platform doesn't lose events.
+                    # NOTE: possible performance improvement: use a map to store only one event per
+                    # variable to reduce frequency of messages to platform.
+                    while self.data_to_send:
                         self.__gateway.send_to_storage(self.get_name(), self.data_to_send.pop())
                 if self.__stopped:
                     self.close()
@@ -212,8 +217,8 @@ class OpcUaConnector(Thread, Connector):
 
     def server_side_rpc_handler(self, content):
         try:
+            rpc_method = content["data"].get("method")
             for method in self.__available_object_resources[content["device"]]['methods']:
-                rpc_method = content["data"].get("method")
                 if rpc_method is not None and method.get(rpc_method) is not None:
                     arguments_from_config = method["arguments"]
                     arguments = content["data"].get("params") if content["data"].get("params") is not None else arguments_from_config
@@ -288,7 +293,11 @@ class OpcUaConnector(Thread, Connector):
                 self.__search_node(device_info["deviceNode"], information_path, result=information_nodes)
                 for information_node in information_nodes:
                     if information_node is not None:
-                        information_value = information_node.get_value()
+                        try:
+                            information_value = information_node.get_value()
+                        except:
+                            log.error("Err get_value: %s", str(information_node))
+                            continue
                         log.debug("Node for %s \"%s\" with path: %s - FOUND! Current values is: %s",
                                   information_type,
                                   information_key,
@@ -433,34 +442,49 @@ class OpcUaConnector(Thread, Connector):
                     result.append(node)
             else:
                 fullpath_pattern = regex.compile(fullpath)
+                full1 = fullpath.replace('\\\\.', '.')
                 for child_node in current_node.get_children():
-                    new_node = self.client.get_node(child_node)
-                    new_node_path = '\\\\.'.join(char.split(":")[1] for char in new_node.get_path(200000, True))
+                    new_node_class = child_node.get_node_class()
+                    #basis Description of node.get_parent() function, sometime child_node.get_parent() return None
+                    new_parent = child_node.get_parent()
+                    if (new_parent is None):
+                        child_node_parent_class = current_node.get_node_class()
+                    else:
+                        child_node_parent_class = child_node.get_parent().get_node_class() 
+                    current_node_path = '\\.'.join(char.split(":")[1] for char in current_node.get_path(200000, True))
+                    new_node_path = '\\\\.'.join(char.split(":")[1] for char in child_node.get_path(200000, True))
+                    if child_node_parent_class == ua.NodeClass.View and new_parent is not None:
+                        parent_path = '\\.'.join(char.split(":")[1] for char in child_node.get_parent().get_path(200000, True))
+                        fullpath = fullpath.replace(current_node_path, parent_path)
+                    nnp1 = new_node_path.replace('\\\\.', '.')
+                    nnp2 = new_node_path.replace('\\\\', '\\')
                     if self.__show_map:
                         log.debug("SHOW MAP: Current node path: %s", new_node_path)
-                    new_node_class = new_node.get_node_class()
-                    regex_fullmatch = regex.fullmatch(fullpath_pattern, new_node_path.replace('\\\\.', '.')) or \
-                                      new_node_path.replace('\\\\', '\\') == fullpath.replace('\\\\', '\\') or \
-                                      new_node_path.replace('\\\\', '\\') == fullpath
-                    regex_search = fullpath_pattern.fullmatch(new_node_path.replace('\\\\.', '.'), partial=True) or \
-                                      new_node_path.replace('\\\\', '\\') in fullpath.replace('\\\\', '\\')
+                    regex_fullmatch = regex.fullmatch(fullpath_pattern,  nnp1) or \
+                                      nnp2 == full1 or \
+                                      nnp2 == fullpath or \
+                                      nnp1 == full1
                     if regex_fullmatch:
                         if self.__show_map:
-                            log.debug("SHOW MAP: Current node path: %s - NODE FOUND", new_node_path.replace('\\\\', '\\'))
-                        result.append(new_node)
-                    elif regex_search:
-                        if self.__show_map:
-                            log.debug("SHOW MAP: Current node path: %s - NODE FOUND", new_node_path)
-                        if new_node_class == ua.NodeClass.Object:
+                            log.debug("SHOW MAP: Current node path: %s - NODE FOUND", nnp2)
+                        result.append(child_node)
+                    else:
+                        regex_search = fullpath_pattern.fullmatch(nnp1, partial=True) or \
+                                          nnp2 in full1 or \
+                                          nnp1 in full1
+                        if regex_search:
                             if self.__show_map:
-                                log.debug("SHOW MAP: Search in %s", new_node_path)
-                            self.__search_node(new_node, fullpath, result=result)
-                        elif new_node_class == ua.NodeClass.Variable:
-                            log.debug("Found in %s", new_node_path)
-                            result.append(new_node)
-                        elif new_node_class == ua.NodeClass.Method and search_method:
-                            log.debug("Found in %s", new_node_path)
-                            result.append(new_node)
+                                log.debug("SHOW MAP: Current node path: %s - NODE FOUND", new_node_path)
+                            if new_node_class == ua.NodeClass.Object:
+                                if self.__show_map:
+                                    log.debug("SHOW MAP: Search in %s", new_node_path)
+                                self.__search_node(child_node, fullpath, result=result)
+                            elif new_node_class == ua.NodeClass.Variable:
+                                log.debug("Found in %s", new_node_path)
+                                result.append(child_node)
+                            elif new_node_class == ua.NodeClass.Method and search_method:
+                                log.debug("Found in %s", new_node_path)
+                                result.append(child_node)
         except CancelledError:
             log.error("Request during search has been canceled by the OPC-UA server.")
         except BrokenPipeError:
