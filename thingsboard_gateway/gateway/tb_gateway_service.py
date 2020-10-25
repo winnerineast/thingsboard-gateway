@@ -214,6 +214,7 @@ class TBGatewayService:
         log.info("Stopping...")
         self.__close_connectors()
         log.info("The gateway has been stopped.")
+        self.tb_client.disconnect()
         self.tb_client.stop()
 
     def __init_remote_configuration(self, force=False):
@@ -300,11 +301,14 @@ class TBGatewayService:
                     connector = None
                     try:
                         if connector_config["config"][config] is not None:
-                            connector = self._implemented_connectors[connector_type](self, connector_config["config"][config],
-                                                                                     connector_type)
-                            connector.setName(connector_config["name"])
-                            self.available_connectors[connector.get_name()] = connector
-                            connector.open()
+                            if self._implemented_connectors[connector_type]:
+                                connector = self._implemented_connectors[connector_type](self, connector_config["config"][config],
+                                                                                        connector_type)
+                                connector.setName(connector_config["name"])
+                                self.available_connectors[connector.get_name()] = connector
+                                connector.open()
+                            else:
+                                log.warning("Connector implementation not found for %s", connector_config["name"])
                         else:
                             log.info("Config not found for %s", connector_type)
                     except Exception as e:
